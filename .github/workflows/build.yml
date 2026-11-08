@@ -191,7 +191,7 @@ jobs:
 
   macos:
     name: macOS (.dmg sin firmar, Apple Silicon)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 360
     env:
       PYTHON_VERSION: "3.12"
@@ -215,8 +215,10 @@ jobs:
           echo "KDE_REF=$(sed -n 's/^craft\/craft-blueprints-kde.revision *= *//p' src/craftmaster.ini)" >> "$GITHUB_ENV"
           echo "NC_REF=$(sed -n 's/^craft\/craft-blueprints-nextcloud.revision *= *//p' src/craftmaster.ini)" >> "$GITHUB_ENV"
 
-      - name: Seleccionar Xcode 16.3
-        run: sudo xcode-select -s /Applications/Xcode_16.3.app/Contents/Developer
+      - name: Seleccionar Xcode 26 (el código usa el SDK de macOS 26, p.ej. NSGlassEffectView)
+        run: |
+          X=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          echo "Usando $X"; sudo xcode-select -s "$X/Contents/Developer"; xcodebuild -version
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:

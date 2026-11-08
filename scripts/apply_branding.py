@@ -134,6 +134,8 @@ def brand_blueprint(craft_root: Path) -> None:
     t = sub_once(t, r'self\.defines\["company"\] = "Nextcloud GmbH"', f'self.defines["company"] = "{VENDOR}"', w)
     t = sub_once(t, r'self\.applicationExecutable = "nextcloud"',
                  f'self.applicationExecutable = "{EXECUTABLE}"', w)
+    if not re.search(r"^import os\b", t, re.M):   # el bloque de marca usa os.* (el blueprint upstream no lo importa)
+        t = "import os\n" + t
     bp.write_text(t, encoding="utf-8")
     print(f"  {bp}: marca aplicada")
 
