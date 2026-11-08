@@ -152,6 +152,7 @@ jobs:
           Copy-Item $exe.FullName "$env:IW\out\InteliworksCloud-$env:IW_VERSION-x64-setup.exe"
 
       - name: Empaquetar instalador .msi (WiX)
+        continue-on-error: true   # el .exe es el instalador principal; el .msi (despliegue corporativo) no bloquea la publicación
         shell: pwsh
         run: |
           $build = "$env:IW\$env:CRAFT_TARGET\build\nextcloud-client"
@@ -163,6 +164,13 @@ jobs:
           Copy-Item -Recurse $archive.FullName $app
           Move-Item "$app\msi" $work
           Copy-Item "$build\work\build\src\gui\InteliworksCloud.ico" $app
+          # Extensiones del Explorador (WinShellExt.wxs las espera en la raíz de la app): buscarlas donde Craft las dejó
+          foreach ($dll in "NCContextMenu.dll", "NCOverlays.dll") {
+            if (!(Test-Path "$app\$dll")) {
+              $f = Get-ChildItem -Recurse -Filter $dll "$env:IW\$env:CRAFT_TARGET" -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($f) { Copy-Item $f.FullName $app; "copiada $dll desde $($f.FullName)" } else { "AVISO: no encontre $dll" }
+            }
+          }
           $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
           Push-Location $work
           & cmd /C "call `"$vs\VC\Auxiliary\Build\vcvars64.bat`" && make-msi.bat `"$app`""
