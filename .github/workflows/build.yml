@@ -1,0 +1,299 @@
+# Compila "Inteliworks Cloud" (cliente de escritorio Nextcloud con marca) para Windows y macOS.
+# Upstream: https://github.com/nextcloud/desktop (GPL-2.0-or-later) en el tag de UPSTREAM_VERSION.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows (instalador .exe + .msi)
+    runs-on: windows-2022
+    timeout-minutes: 360
+    env:
+      IW: C:\iw
+      CRAFT_TARGET: windows-msvc2022_64-cl
+      CRAFT_MASTER_LOCATION: C:\iw\CraftMaster
+      CRAFT_MASTER_CONFIG: C:\iw\craftmaster.ini
+      PYTHON_VERSION: "3.12"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: brand
+
+      - name: Versiones
+        shell: bash
+        run: |
+          UPSTREAM_TAG=$(tr -d '\r\n ' < brand/UPSTREAM_VERSION)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then IW_VERSION="${GITHUB_REF_NAME#v}"; else IW_VERSION="${UPSTREAM_TAG#v}-dev.${GITHUB_RUN_NUMBER}"; fi
+          echo "UPSTREAM_TAG=$UPSTREAM_TAG" >> "$GITHUB_ENV"
+          echo "IW_VERSION=$IW_VERSION" >> "$GITHUB_ENV"
+          echo "upstream=$UPSTREAM_TAG version=$IW_VERSION"
+
+      - name: Descargar upstream y aplicar marca
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:IW | Out-Null
+          git -c advice.detachedHead=false clone -q --depth 1 --branch $env:UPSTREAM_TAG https://github.com/nextcloud/desktop.git "$env:IW\src"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python brand\scripts\apply_branding.py source "$env:IW\src"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "$env:IW\src\craftmaster.ini" $env:CRAFT_MASTER_CONFIG
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Instalar WiX 3.14 (MSI)
+        shell: pwsh
+        run: |
+          $wix = "$env:IW\wix"
+          Invoke-WebRequest -Uri https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip -OutFile "$env:IW\wix.zip"
+          Expand-Archive "$env:IW\wix.zip" -DestinationPath "$wix\bin"
+          # NCMsiHelper compila contra el SDK de WiX ($WIX/SDK/VS2017)
+          New-Item -ItemType Directory -Force -Path "$wix\SDK" | Out-Null
+          Move-Item "$wix\bin\sdk\vs2017" "$wix\SDK\VS2017"
+          Move-Item "$wix\bin\sdk\inc" "$wix\SDK\VS2017\inc"
+          Get-ChildItem "$wix\SDK\VS2017" | Select-Object Name
+          "WIX=$wix" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Revisiones de Craft
+        id: craft-revisions
+        shell: pwsh
+        run: |
+          function configValue($key) {
+              $escapedKey = [regex]::Escape($key)
+              $m = @(Select-String -Path $env:CRAFT_MASTER_CONFIG -Pattern "^\s*$escapedKey\s*=\s*(.+?)\s*$")
+              if ($m.Count -ne 1) { throw "Expected exactly one $key value in craftmaster.ini." }
+              return $m[0].Matches[0].Groups[1].Value.Trim()
+          }
+          function remoteRevision($repository, $ref) {
+              $revision = git ls-remote $repository $ref
+              if ($LASTEXITCODE -ne 0 -or !$revision) { throw "Could not resolve $ref from $repository." }
+              return ($revision -split '\s+')[0]
+          }
+          $craftRevision = configValue "CraftRevision"
+          $kdeRef = configValue "craft/craft-blueprints-kde.revision"
+          $ncRef = configValue "craft/craft-blueprints-nextcloud.revision"
+          $kdeRev = remoteRevision "https://github.com/nextcloud/craft-blueprints-kde.git" "refs/heads/$kdeRef"
+          $ncRev = remoteRevision "https://github.com/nextcloud/craft-blueprints-nextcloud.git" "refs/heads/$ncRef"
+          @("kde_ref=$kdeRef", "nextcloud_ref=$ncRef", "key=$craftRevision-$kdeRev-$ncRev") |
+              Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Restaurar dependencias Craft (cache)
+        id: craft-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            C:\iw\CraftMaster
+            C:\iw\craftmaster.ini
+            C:\iw\craft-clone
+            C:\iw\windows-msvc2022_64-cl
+          key: win-craft-v1-${{ env.CRAFT_TARGET }}-py${{ env.PYTHON_VERSION }}-${{ steps.craft-revisions.outputs.key }}
+
+      - name: Instalar Craft + dependencias del cliente
+        if: steps.craft-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          & cmd /C "git clone -q --depth=1 https://github.com/KDE/craftmaster.git $env:CRAFT_MASTER_LOCATION 2>&1"
+          function craft() {
+              python "$env:CRAFT_MASTER_LOCATION\CraftMaster.py" --config $env:CRAFT_MASTER_CONFIG --target $env:CRAFT_TARGET -c $args
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          craft --add-blueprint-repository "https://github.com/nextcloud/craft-blueprints-kde.git|${{ steps.craft-revisions.outputs.kde_ref }}|"
+          craft --add-blueprint-repository "https://github.com/nextcloud/craft-blueprints-nextcloud.git|${{ steps.craft-revisions.outputs.nextcloud_ref }}|"
+          craft craft
+          craft --install-deps nextcloud-client
+
+      - name: Guardar dependencias Craft (cache)
+        if: steps.craft-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            C:\iw\CraftMaster
+            C:\iw\craftmaster.ini
+            C:\iw\craft-clone
+            C:\iw\windows-msvc2022_64-cl
+          key: win-craft-v1-${{ env.CRAFT_TARGET }}-py${{ env.PYTHON_VERSION }}-${{ steps.craft-revisions.outputs.key }}
+
+      - name: Aplicar marca al blueprint de Craft
+        shell: pwsh
+        run: python brand\scripts\apply_branding.py blueprint "$env:IW\$env:CRAFT_TARGET"
+
+      - name: Instalar Inkscape (genera iconos desde SVG)
+        shell: pwsh
+        run: choco install inkscape -y --no-progress
+
+      - name: Compilar
+        shell: pwsh
+        run: |
+          "$env:IW\$env:CRAFT_TARGET\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          python "$env:CRAFT_MASTER_LOCATION\CraftMaster.py" --config $env:CRAFT_MASTER_CONFIG --target $env:CRAFT_TARGET -c --src-dir "$env:IW\src" nextcloud-client
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Empaquetar instalador .exe (NSIS)
+        shell: pwsh
+        run: |
+          python "$env:CRAFT_MASTER_LOCATION\CraftMaster.py" --config $env:CRAFT_MASTER_CONFIG --target $env:CRAFT_TARGET -c --package --src-dir "$env:IW\src" nextcloud-client
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force -Path "$env:IW\out" | Out-Null
+          $exe = Get-ChildItem "$env:IW\$env:CRAFT_TARGET\tmp" -Filter "nextcloud-client-*.exe" | Sort-Object LastWriteTime | Select-Object -Last 1
+          if (!$exe) { Get-ChildItem -Recurse "$env:IW\$env:CRAFT_TARGET\tmp" | Select-Object FullName; throw "No se encontro el instalador NSIS" }
+          Copy-Item $exe.FullName "$env:IW\out\InteliworksCloud-$env:IW_VERSION-x64-setup.exe"
+
+      - name: Empaquetar instalador .msi (WiX)
+        shell: pwsh
+        run: |
+          $build = "$env:IW\$env:CRAFT_TARGET\build\nextcloud-client"
+          $archive = Get-ChildItem $build -Directory | Where-Object { $_.Name -like "archive*" } | Select-Object -First 1
+          if (!$archive) { Get-ChildItem $build | Select-Object FullName; throw "No se encontro el directorio archive de Craft" }
+          $app = "$env:IW\msi-app"
+          $work = "$env:IW\msi-work"
+          Remove-Item -Recurse -Force $app, $work -ErrorAction SilentlyContinue
+          Copy-Item -Recurse $archive.FullName $app
+          Move-Item "$app\msi" $work
+          Copy-Item "$build\work\build\src\gui\InteliworksCloud.ico" $app
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          Push-Location $work
+          & cmd /C "call `"$vs\VC\Auxiliary\Build\vcvars64.bat`" && make-msi.bat `"$app`""
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+          $msi = Get-ChildItem $work -Filter "*.msi" | Select-Object -First 1
+          if (!$msi) { throw "No se genero el .msi" }
+          Copy-Item $msi.FullName "$env:IW\out\InteliworksCloud-$env:IW_VERSION-x64.msi"
+
+      - name: Verificar marca
+        shell: pwsh
+        run: |
+          $app = "$env:IW\msi-app"
+          $exe = Get-Item "$app\bin\inteliworkscloud.exe"
+          $vi = $exe.VersionInfo
+          "ProductName=$($vi.ProductName) | FileDescription=$($vi.FileDescription) | Company=$($vi.CompanyName) | Version=$($vi.ProductVersion)"
+          if ("$($vi.ProductName)$($vi.FileDescription)" -notmatch "Inteliworks") { throw "El exe no tiene la marca" }
+          if (Test-Path "$app\bin\nextcloud.exe") { throw "Quedo un nextcloud.exe sin marca" }
+          Get-ChildItem "$env:IW\out" | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: InteliworksCloud-windows
+          path: C:\iw\out\*
+          if-no-files-found: error
+
+  macos:
+    name: macOS (.dmg sin firmar, Apple Silicon)
+    runs-on: macos-15
+    timeout-minutes: 360
+    env:
+      PYTHON_VERSION: "3.12"
+      APP_NAME: Inteliworks Cloud
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: brand
+
+      - name: Versiones
+        run: |
+          UPSTREAM_TAG=$(tr -d '\r\n ' < brand/UPSTREAM_VERSION)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then IW_VERSION="${GITHUB_REF_NAME#v}"; else IW_VERSION="${UPSTREAM_TAG#v}-dev.${GITHUB_RUN_NUMBER}"; fi
+          echo "UPSTREAM_TAG=$UPSTREAM_TAG" >> "$GITHUB_ENV"
+          echo "IW_VERSION=$IW_VERSION" >> "$GITHUB_ENV"
+
+      - name: Descargar upstream y aplicar marca
+        run: |
+          git -c advice.detachedHead=false clone -q --depth 1 --branch "$UPSTREAM_TAG" https://github.com/nextcloud/desktop.git src
+          python3 brand/scripts/apply_branding.py source src
+          echo "KDE_REF=$(sed -n 's/^craft\/craft-blueprints-kde.revision *= *//p' src/craftmaster.ini)" >> "$GITHUB_ENV"
+          echo "NC_REF=$(sed -n 's/^craft\/craft-blueprints-nextcloud.revision *= *//p' src/craftmaster.ini)" >> "$GITHUB_ENV"
+
+      - name: Seleccionar Xcode 16.3
+        run: sudo xcode-select -s /Applications/Xcode_16.3.app/Contents/Developer
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Restaurar Craft (cache)
+        id: craft-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            macbuild/craftmaster
+            macbuild/macos-clang-arm64
+          key: mac-craft-v1-${{ hashFiles('src/craftmaster.ini') }}
+
+      - name: Instalar Inkscape
+        run: brew install --cask inkscape
+
+      - name: Compilar con mac-crafter (sin firma, sin Sparkle)
+        working-directory: src/admin/osx/mac-crafter
+        run: |
+          swift run mac-crafter build \
+            --build-path "$GITHUB_WORKSPACE/macbuild" \
+            --product-path "$GITHUB_WORKSPACE/macproduct" \
+            --arch arm64 \
+            --app-name "$APP_NAME" \
+            --kde-blueprints-git-ref "$KDE_REF" \
+            --client-blueprints-git-url https://github.com/nextcloud/craft-blueprints-nextcloud.git \
+            --client-blueprints-git-ref "$NC_REF" \
+            --disable-auto-updater
+
+      - name: Guardar Craft (cache)
+        if: steps.craft-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            macbuild/craftmaster
+            macbuild/macos-clang-arm64
+          key: mac-craft-v1-${{ hashFiles('src/craftmaster.ini') }}
+
+      - name: Firma ad-hoc y .dmg
+        run: |
+          APP="macproduct/$APP_NAME.app"
+          test -d "$APP"
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict "$APP"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleName" -c "Print :CFBundleIdentifier" -c "Print :CFBundleShortVersionString" "$APP/Contents/Info.plist"
+          mkdir -p dmgroot out
+          cp -R "$APP" dmgroot/
+          ln -s /Applications dmgroot/Applications
+          hdiutil create -volname "$APP_NAME" -srcfolder dmgroot -ov -format UDZO "out/InteliworksCloud-$IW_VERSION-macos-arm64.dmg"
+          ls -la out
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: InteliworksCloud-macos
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    name: Publicar release
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.windows.result == 'success' }}
+    needs: [windows, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Crear release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la dist
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Inteliworks Cloud ${GITHUB_REF_NAME#v}" \
+            --notes "Cliente de escritorio Inteliworks Cloud ${GITHUB_REF_NAME#v} (basado en Nextcloud Desktop, GPL-2.0-or-later). Instaladores SIN firma de codigo: en Windows SmartScreen pedira 'Mas informacion > Ejecutar de todas formas'; en macOS abrir con clic derecho > Abrir."
