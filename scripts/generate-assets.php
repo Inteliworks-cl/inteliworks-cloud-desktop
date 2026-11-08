@@ -56,4 +56,18 @@ file_put_contents(dirname($out) . "/$exe.VisualElementsManifest.xml",
     Square70x70Logo=\"visualelements\\70-$name-w10startmenu.png\"/>
 </Application>
 ");
+
+// Imagenes del instalador MSI (WiX): banner 493x58 (logo a la derecha) y dialogo 493x314 (panel izquierdo)
+$gui = "$root/branding/admin/win/msi/gui";
+if (!is_dir($gui)) mkdir($gui, 0755, true);
+[$r, $g, $b] = sscanf($brand, "#%02x%02x%02x");
+$ban = imagecreatetruecolor(493, 58);
+imagefill($ban, 0, 0, imagecolorallocate($ban, 255, 255, 255));
+imagecopyresampled($ban, $img, 493 - 54, 4, 0, 0, 50, 50, imagesx($img), imagesy($img));
+imagebmp($ban, "$gui/banner.bmp", false); echo "  $gui/banner.bmp\n";
+$dlg = imagecreatetruecolor(493, 314);
+imagefill($dlg, 0, 0, imagecolorallocate($dlg, 255, 255, 255));
+imagefilledrectangle($dlg, 0, 0, 163, 313, imagecolorallocate($dlg, $r, $g, $b));
+imagecopyresampled($dlg, $img, 22, 97, 0, 0, 120, 120, imagesx($img), imagesy($img));
+imagebmp($dlg, "$gui/dialog.bmp", false); echo "  $gui/dialog.bmp\n";
 echo "OK\n";

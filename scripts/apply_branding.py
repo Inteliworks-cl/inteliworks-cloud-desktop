@@ -27,6 +27,7 @@ HELP_URL = "https://inteliworks.cl"
 SERVER_URL_HINT = "https://cloud."  # pre-llenado editable; cada empresa escribe el suyo
 REV_DOMAIN = "cl.inteliworks.cloud"
 BRAND_COLOR = "#1E90D6"
+UPDATE_URL = "https://github.com/Inteliworks-cl/inteliworks-cloud-desktop/releases"
 # GUIDs propios (NO reutilizar los de Nextcloud: chocarian si ambos estan instalados)
 GUIDS = {
     "WIN_SHELLEXT_CONTEXT_MENU_GUID": "{9A6A41F8-1C19-4DBA-9B68-4090549FB3AD}",
@@ -69,8 +70,9 @@ def brand_source(src: Path) -> None:
     # APPLICATION_ICON_NAME queda = "${APPLICATION_SHORTNAME}" (rama no-dev de upstream)
     t = set_var(t, "APPLICATION_DOMAIN", DOMAIN, w)
     t = set_var(t, "APPLICATION_VENDOR", VENDOR, w)
-    # Sin actualizaciones de Nextcloud sobre la app con marca
-    t = set_var(t, "APPLICATION_UPDATE_URL", "", w)
+    # Sin actualizaciones de Nextcloud sobre la app con marca: updater desactivado y la URL
+    # (que theme.cpp exige definida) apunta a nuestros Releases, nunca a updates.nextcloud.org
+    t = set_var(t, "APPLICATION_UPDATE_URL", UPDATE_URL, w)
     t = sub_once(t, r'^option\(\s*BUILD_UPDATER\s+"Build updater"\s+ON\s*\)',
                  'option( BUILD_UPDATER "Build updater" OFF )', w)
     t = set_var(t, "APPLICATION_HELP_URL", HELP_URL, w)
@@ -93,13 +95,14 @@ def brand_source(src: Path) -> None:
     cm.write_text(t, encoding="utf-8")
     print(f"  {w}: marca aplicada")
 
-    # Iconos, logo del asistente y manifest de tiles
-    for f in (BRANDING / "theme").rglob("*"):
-        if f.is_file():
-            dst = src / "theme" / f.relative_to(BRANDING / "theme")
+    # Archivos de marca (iconos, logo del asistente, tiles, imagenes MSI): branding/<ruta> -> <upstream>/<ruta>
+    for f in BRANDING.rglob("*"):
+        rel = f.relative_to(BRANDING)
+        if f.is_file() and rel.parts[0] != "source":
+            dst = src / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(f, dst)
-            print(f"  theme/{f.relative_to(BRANDING / 'theme')}")
+            print(f"  {rel.as_posix()}")
 
     # No compilar la suite de tests en el build de release (ahorra ~30-40 min)
     ini = src / "craftmaster.ini"

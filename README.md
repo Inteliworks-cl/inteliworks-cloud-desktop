@@ -34,7 +34,7 @@ Este repo **no** contiene una copia del código de Nextcloud. Contiene solo la c
 ```
 UPSTREAM_VERSION              tag de nextcloud/desktop que se compila (ej. v35.0.3)
 branding/source/icon.png      logo fuente (512x512)
-branding/theme/               iconos y logos generados (se copian sobre theme/ de upstream)
+branding/theme/, branding/admin/  iconos, logos e imágenes MSI generados (se copian sobre upstream)
 scripts/generate-assets.php   genera branding/theme/ desde icon.png (PHP + GD)
 scripts/apply_branding.py     aplica la marca: NEXTCLOUD.cmake, theme/, blueprint de Craft
 .github/workflows/build.yml   compila Windows (Craft + NSIS + WiX) y macOS (mac-crafter)
