@@ -263,7 +263,8 @@ jobs:
           path: |
             macbuild/craftmaster
             macbuild/macos-clang-${{ matrix.arch }}
-          key: mac-craft-v1-${{ matrix.arch }}-${{ hashFiles('src/craftmaster.ini') }}
+            macbuild/macos-64-clang
+          key: mac-craft-v2-${{ matrix.arch }}-${{ hashFiles('src/craftmaster.ini') }}
 
       - name: Instalar Inkscape
         run: brew install --cask inkscape
@@ -314,7 +315,8 @@ jobs:
           path: |
             macbuild/craftmaster
             macbuild/macos-clang-${{ matrix.arch }}
-          key: mac-craft-v1-${{ matrix.arch }}-${{ hashFiles('src/craftmaster.ini') }}
+            macbuild/macos-64-clang
+          key: mac-craft-v2-${{ matrix.arch }}-${{ hashFiles('src/craftmaster.ini') }}
 
       - name: Firma ad-hoc y .dmg
         run: |
